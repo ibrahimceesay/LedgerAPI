@@ -1,4 +1,5 @@
 ﻿using LedgerAPI.Domain.Enum;
+using LedgerAPI.Domain.Exceptions;
 
 namespace LedgerAPI.Domain.Entities
 {
@@ -38,7 +39,40 @@ namespace LedgerAPI.Domain.Entities
         {
             if (string.IsNullOrWhiteSpace(idempotencyKey)) throw new ArgumentException("Idempotency key is required.", nameof(idempotencyKey));
 
-            //if (legs.Count < 2) throw new InsufficientEntriesException();
+            if (legs.Count < 2) throw new InsufficientEntriesException();
+
+            var normalizedCurrency = currency.ToUpperInvariant();
+
+            var transaction = new Transaction(description, normalizedCurrency, idempotencyKey, reversalOfTransactionId);
+
+            decimal debitTotal = 0m;
+            decimal creditTotal = 0m;
+
+            foreach (var leg in legs)
+            {
+                var entry = new Entry(transaction.Id, leg.AccountId, leg.Side, leg.Amount, normalizedCurrency);
+                transaction._entries.Add(entry);
+
+                if (leg.Side == EntrySide.Debit) debitTotal += leg.Amount;
+                else creditTotal += leg.Amount;
+            }
+
+            if (debitTotal != creditTotal) throw new UnbalancedTransactionException(debitTotal, creditTotal);
+
+            return transaction;
         }
-   }
+
+        public Transaction Reverse(string idempotencyKey, string? reasonSuffix = null)
+        {
+            var flippedLegs = _entries
+                .Select(e => (e.AccountId, Side: e.Side == EntrySide.Debit ? EntrySide.Credit : EntrySide.Debit, e.Amount))
+                .ToList();
+
+            var description = reasonSuffix is null
+                ? $"Reversal of {Id}: {Description}"
+                : $"Reversal of {Id}: {Description} ({reasonSuffix})";
+
+            return Post(description, Currency, idempotencyKey, flippedLegs, reversalOfTransactionId: Id);
+        }
+    }
 }
